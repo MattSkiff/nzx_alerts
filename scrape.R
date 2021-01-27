@@ -9,16 +9,18 @@ library(anytime) # time manip2
 panderOptions('table.split.table', Inf)
 
 url <- "https://www.nzx.com/markets/NZSX/announcements"
-iterations <- 0
 
 
 simple <- read_html(url)
 simple_table <- simple %>% html_table() %>% as.data.frame()
-cat("retrieving initial announcements table...")
+cat("retrieving and printing initial announcements table...")
+print(simple_table)
 
 ui <- fluidPage()
 
 server <- function(input, output) {
+  
+  iterations <- reactiveValues(count = 0)
   
   # Anything that calls autoInvalidate will automatically invalidate
   # every 60 seconds.
@@ -30,8 +32,9 @@ server <- function(input, output) {
     
     autoInvalidate()
     
-    iterations <- iterations + 1 # check iteration number
-    cat("Iteration: ",iterations,"\n")
+    isolate({ iterations$count <- iterations$count + 1 }) # check iteration number
+    
+    cat("Iteration: ",iterations$count,"\n")
     
     # TODO: add uptime
     
@@ -53,52 +56,74 @@ server <- function(input, output) {
     
     if (trading_status) {
       cat("NZX open...\n")
-      cat("polling NZX for new announcements...\n")
       
-      nzx_latest <- read_html(url)
-      nzx_latest <- nzx_latest %>% html_table() %>% as.data.frame()
+       nzx_latest <-tryCatch(
+        {
+          cat("polling NZX for new announcements...\n")
+          read_html(url) 
+        },
+        error=function(cond) {
+          message("original error message:")
+          message(cond)
+          return(NA)
+        },
+        warning=function(cond) {
+          message(paste("URL caused a warning:"))
+          return(NA)
+        },
+        finally={}
+      )   
       
-      any_change <- !identical(nzx_latest,simple_table)
-      
-      # has nzx table changed?
-      if (any_change) {
-        cat("new announcements detected...\n")
-
+      if (!is.na(nzx_latest)) { 
+       
+        nzx_latest <- nzx_latest %>% html_table() %>% as.data.frame()
         
-        # has nzx table got new 'P' announcement
-        nzxlatestNotInsimple_table <- sqldf('SELECT * FROM nzx_latest EXCEPT SELECT * FROM simple_table')
-      
-        # any new price sensitive announcements?
-        price_sensitive <- any(grepl("P",unique(nzxlatestNotInsimple_table$Flag),fixed = TRUE))
+        any_change <- !identical(nzx_latest,simple_table)
         
-        if(price_sensitive) {
-          
-          warning("new announcements is price sensitive....\n")
-          latest_announcement_time <- max(nzxlatestNotInsimple_table$Date)
-          
+        # has nzx table changed?
+        if (any_change) {
+          cat("new announcements detected...\n")
           simple_table <- nzx_latest
           cat("overwriting benchmark announcements table....\n")
           
-          addresses <- c("<skiffcoffee@gmail.com>","<rcs20@students.waikato.ac.nz>")
           
-          for (i in 1:length(addresses)) {
+          # has nzx table got new 'P' announcement
+          nzxlatestNotInsimple_table <- sqldf('SELECT * FROM nzx_latest EXCEPT SELECT * FROM simple_table')
+        
+          # any new price sensitive announcements?
+          # TODO: print new announcements
           
-            Server<-list(smtpServer= "127.0.0.1")
-            from <- sprintf("<matthewnzxalert@localfglinkalert.com>","Matthew NZX alert system") # the sender's name is an optional value
-            to <- sprintf(addresses[i])
+          price_sensitive <- any(grepl("P",unique(nzxlatestNotInsimple_table$Flag),fixed = TRUE))
+          
+          if(price_sensitive) {
             
-            subject <- paste("Matthew S NZX alert",latest_announcement_time)
-            body <- paste("New price sensitive announcement detected. Details follow:",pander_return(nzxlatestNotInsimple_table),collapse ="\n")
+            warning("new announcements is price sensitive....\n")
+            latest_announcement_time <- max(nzxlatestNotInsimple_table$Date)
             
-            sendmail(from,to,subject,body,control=list(smtpServer= "127.0.0.1"))
-            cat("message sent!\n")
-          
+            # TODO: print /colourise announcements
+            addresses <- c("<skiffcoffee@gmail.com>","<rcs20@students.waikato.ac.nz>")
+            
+            for (i in 1:length(addresses)) {
+            
+              Server<-list(smtpServer= "127.0.0.1")
+              from <- sprintf("<matthewnzxalert@localfglinkalert.com>","Matthew NZX alert system") # the sender's name is an optional value
+              to <- sprintf(addresses[i])
+              
+              subject <- paste("New Price Sensitive Announcement on NZX at: ",latest_announcement_time)
+              body <- pander_return(nzxlatestNotInsimple_table)
+              
+              sendmail(from,to,subject,body,control=list(smtpServer= "127.0.0.1"))
+              cat("message sent!\n")
+            
+            }
+          } else {
+            cat("new announcement is not price sensitive...\n")
           }
         } else {
-          cat("new announcement is not price sensitive...\n")
+          cat("no new announcements detected...\n")
         }
       } else {
-        cat("no new announcements detected...\n")
+        cat("Error scraping NZX announcements....")
       }
     } else {
       cat("NZX is closed...")
